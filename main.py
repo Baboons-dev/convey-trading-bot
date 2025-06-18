@@ -53,6 +53,7 @@ USER_DB: Dict[int, Dict] = {}
 # SOL mint address (native SOL)
 SOL_MINT = "So11111111111111111111111111111111111111112"
 WSOL_MINT = "So11111111111111111111111111111111111111112"
+METADATA_PROGRAM_ID = Pubkey.from_string("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
 
 
 @dataclass
@@ -427,7 +428,12 @@ class BlockchainUtils:
         except Exception as e:
             print(f"Error getting SOL balance: {e}")
             return 0.0
-
+    async def get_token_metadata(self,mint_address:str):
+        try:
+            mint_pubkey = Pubkey.from_string(mint_address)
+            mint_account_info = await self.client.get_token_supply(mint_pubkey)
+            total_supply = int(mint_account_info.value.amount)
+            decimals = 
     async def get_token_balance(self, wallet_address: str, mint_address: str) -> float:
         """Get token balance for a specific mint"""
         try:

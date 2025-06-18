@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 from typing import Dict, List, Optional
 from telegram import Update
 from solana.rpc.async_api import AsyncClient
@@ -543,23 +544,23 @@ class BlockchainUtils:
             swap_transaction_b64 = await self.raydium.create_swap_transaction(
                 quote, wallet_pubkey
             )
-
             if not swap_transaction_b64:
                 raise Exception("Could not create swap transaction")
 
-            # Decode and sign the transaction
-            transaction_bytes = base64.b64decode(swap_transaction_b64)
-            transaction = VersionedTransaction.from_bytes(transaction_bytes)
-
-            # Create keypair from private key
-            private_key = user_data["private_key"]
-            keypair = Keypair.from_base58_string(private_key)
-
-            # Sign transaction
-            transaction.sign([keypair])
-
-            # Send transaction
-            result = await self.client.send_transaction(transaction)
+            # Decode to VersionedTransaction
+            tx_bytes = base64.b64decode(swap_transaction_b64)
+            tx = VersionedTransaction.from_bytes(tx_bytes)
+            tx = VersionedTransaction.from_bytes(base64.b64decode(swap_transaction_b64))
+            tx.verify_with_results()
+            # Create Keypair from private key
+            keypair = Keypair.from_base58_string(user_data["private_key"])
+            # Sign the message
+            sig = keypair.sign_message(bytes(tx.message))
+            # # Assign signature
+            signed_tx = VersionedTransaction(tx.message, [keypair])
+            signed_tx.verify_and_hash_message()
+            # Send the transaction
+            result = await self.client.send_raw_transaction(bytes(signed_tx))
             return str(result.value)
 
         except Exception as e:
@@ -1018,6 +1019,18 @@ class TelegramBot:
         print("Bot is running on Solana Devnet...")
         print(f"Target token mint: {CONFIG['target_token_mint']}")
         self.app.run_polling()
+
+
+async def main():
+    # USER_DB[0] = {
+    #     "wallet_id": "cuv82spsv6lnbchakez8f3fg",
+    #     "wallet_address": "CcCKEJzTagj5W6wJkAB33HY7AbShN3G4h3xsUAoVWmVc",
+    #     "private_key": "4rHYEWpovVao3UMpADyf1mFqr3rh6ZkjqPTFQCLbKeWTR1aFmytNCjJRhMgjmW8iHAf7m6wzYcTmjvTLRBDvjSEW",
+    #     "purchase_amount": 0.01,  # Default amount in SOL
+    # }
+    utils = BlockchainUtils()
+    result = await utils.execute_swap(0, 0.01)
+    print(result)
 
 
 if __name__ == "__main__":

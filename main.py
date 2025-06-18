@@ -4,6 +4,8 @@ from typing import Dict, List, Optional
 from telegram import Update
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
+from solders.token.state import TokenAccount
+from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -33,7 +35,7 @@ CONFIG = {
         "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5Ocjo2kk0Z8OofWEnm7bFVTpaqvW3asvvoZ43ksObBvsI/sQkPEuhEyWeTMreiM4aSaiQfvicFMnld/iJOL2cg==",
     ),
     # Using Solana devnet for testing
-    "rpc_url": os.getenv("RPC_URL", "https://api.devnet.solana.com"),
+    "rpc_url": os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com"),
     # Example token mint address on devnet (replace with actual token you want to buy)
     "target_token_mint": os.getenv(
         "TARGET_TOKEN_MINT",
@@ -43,6 +45,14 @@ CONFIG = {
     "slippage_bps": 500,  # 5% slippage
     "raydium_api_url": "https://api-v3.raydium.io/main",
 }
+
+KEY_OFFSET = 0
+UPDATE_AUTH_OFFSET = KEY_OFFSET + 1
+MINT_OFFSET = UPDATE_AUTH_OFFSET + 32
+NAME_OFFSET = MINT_OFFSET + 32
+NAME_LENGTH = 32  # Padded to 32 bytes
+SYMBOL_OFFSET = NAME_OFFSET + NAME_LENGTH
+SYMBOL_LENGTH = 10  # Padded to 10 bytes
 
 auth_string = f"{CONFIG['privy_app_id']}:{CONFIG['privy_api_key']}"
 encoded_auth = base64.b64encode(auth_string.encode()).decode()
@@ -155,15 +165,6 @@ class PrivyIntegration:
         url = f"https://api.privy.io/v1/wallets/{wallet_id}/export"
         print(f"Exporting wallet ID: {wallet_id}")
         print(f"Export URL: {url}")
-
-        # Handle private key for basic auth (separate from HPKE decryption key)
-        private_key_string = CONFIG["privy_auth_private_key"].replace(
-            "wallet-auth:", ""
-        )
-        private_key_pem = f"-----BEGIN PRIVATE KEY-----\n{private_key_string}\n-----END PRIVATE KEY-----"
-        private_key_bytes = private_key_pem.encode()
-        encoded_private_key = base64.b64encode(private_key_bytes).decode()
-
         # Request body - this public key should match your HPKE private key
         body_data = {
             "encryption_type": "HPKE",
@@ -351,7 +352,7 @@ class RaydiumSwap:
         """Get swap quote from Raydium API"""
         try:
             # Using Jupiter API as it's more reliable for quotes (Raydium routes through Jupiter)
-            url = f"https://quote-api.jup.ag/v6/quote"
+            url = "https://quote-api.jup.ag/v6/quote"
             params = {
                 "inputMint": input_mint,
                 "outputMint": output_mint,
@@ -428,27 +429,82 @@ class BlockchainUtils:
         except Exception as e:
             print(f"Error getting SOL balance: {e}")
             return 0.0
-    async def get_token_metadata(self,mint_address:str):
+
+    async def get_token_metadata(
+        self, wallet_address: str, mint_address: str
+    ) -> Optional[Dict[str, str]]:
         try:
             mint_pubkey = Pubkey.from_string(mint_address)
             mint_account_info = await self.client.get_token_supply(mint_pubkey)
-            total_supply = int(mint_account_info.value.amount)
-            decimals = 
-    async def get_token_balance(self, wallet_address: str, mint_address: str) -> float:
+            decimals = int(mint_account_info.value.decimals)
+            supply = (int(mint_account_info.value.amount)) / (10**decimals)
+            balance = await self.get_token_balance(
+                wallet_address, mint_address, decimals
+            )
+            metadata_seed = [
+                b"metadata",
+                bytes(METADATA_PROGRAM_ID),
+                bytes(mint_pubkey),
+            ]
+            metadata_pda, _ = Pubkey.find_program_address(
+                metadata_seed, METADATA_PROGRAM_ID
+            )
+
+            metadata_account = await self.client.get_account_info(metadata_pda)
+
+            if not metadata_account.value:
+                return {
+                    "supply": supply,
+                    "decimals": decimals,
+                    "balance": balance,
+                    "name": "unknown",
+                    "symbol": "unknown",
+                }
+
+            data_base64 = metadata_account.value.data
+            metadata_bytes = data_base64
+
+            name = (
+                metadata_bytes[NAME_OFFSET : NAME_OFFSET + NAME_LENGTH]
+                .decode("utf-8")
+                .replace("\x00", "")
+                .strip()
+            )
+            symbol = (
+                metadata_bytes[SYMBOL_OFFSET : SYMBOL_OFFSET + SYMBOL_LENGTH]
+                .decode("utf-8")
+                .replace("\x00", "")
+                .strip()
+            )
+
+            return {
+                "name": name,
+                "symbol": symbol,
+                "supply": str(supply),
+                "balance": str(balance),
+            }
+
+        except Exception as e:
+            print(f"Error getting token metadata: {e}")
+            return None
+
+    async def get_token_balance(
+        self, wallet_address: str, mint_address: str, decimals: int
+    ) -> float:
         """Get token balance for a specific mint"""
         try:
             pubkey = Pubkey.from_string(wallet_address)
             mint_pubkey = Pubkey.from_string(mint_address)
-
-            # Get token accounts
-            response = await self.client.get_token_accounts_by_owner(
-                pubkey, {"mint": mint_pubkey}
+            token_opts = TokenAccountOpts(
+                mint=mint_pubkey,
+                encoding="base64",
             )
-
-            if response.value:
-                token_account = response.value[0].account.data.parsed["info"]
-                amount = int(token_account["tokenAmount"]["amount"])
-                decimals = token_account["tokenAmount"]["decimals"]
+            # Get token accounts
+            response = await self.client.get_token_accounts_by_owner(pubkey, token_opts)
+            raw_data = response.value[0].account.data if response.value else None
+            data = TokenAccount.from_bytes(raw_data) if raw_data else None
+            if data:
+                amount = data.amount
                 return amount / (10**decimals)
             return 0.0
         except Exception as e:
@@ -545,6 +601,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("admin_stats", self._admin_stats))
         self.app.add_handler(CommandHandler("mywallets", self.handle_wallets_command))
         self.app.add_handler(CommandHandler("export", self._export_wallet))
+        self.app.add_handler(CommandHandler("token_metadata", self._get_token_metadata))
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message"""
@@ -560,6 +617,7 @@ class TelegramBot:
             "/quote <amount> - Get swap quote for amount in SOL\n"
             "/mywallets - View your wallets\n\n"
             "/export - Export your wallet details\n"
+            "/token_metadata <mint_address> - Get token metadata for a specific mint\n\n"
             "⚠️ This bot uses Solana DEVNET for testing!"
         )
 
@@ -597,7 +655,7 @@ class TelegramBot:
                     response += f"Address: <code>{user_data.get('wallet_address', 'Not available')}</code>\n"
 
                     if private_key:
-                        response += f"Private Key: <code>{private_key.get("decrypted_content","")}</code>\n"
+                        response += f"Private Key: <code>{private_key.get('decrypted_content', '')}</code>\n"
                     else:
                         response += "❌ Private key not available in export\n"
 
@@ -638,6 +696,44 @@ class TelegramBot:
             print(f"Export wallet error: {error_msg}")
             await update.message.reply_text(f"❌ Error exporting wallet: {error_msg}")
 
+    async def _get_token_metadata(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Get token metadata for a specific mint"""
+        user_id = update.message.from_user.id
+
+        if user_id not in USER_DB:
+            await update.message.reply_text("Please create a wallet first with /create")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Please specify a token mint address (e.g. /token_metadata 4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R)"
+            )
+            return
+
+        mint_address = context.args[0]
+
+        try:
+            metadata = await self.blockchain.get_token_metadata(
+                USER_DB[user_id]["wallet_address"], mint_address
+            )
+
+            if metadata:
+                response = (
+                    f"🔍 Token Metadata for {mint_address}:\n\n"
+                    f"Name: {metadata['name']}\n"
+                    f"Symbol: {metadata['symbol']}\n"
+                    f"Supply: {metadata['supply']}\n"
+                    f"Balance: {metadata['balance']}\n"
+                )
+                await update.message.reply_text(response)
+            else:
+                await update.message.reply_text("❌ Token metadata not found.")
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error fetching metadata: {str(e)}")
+
     async def handle_wallets_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
@@ -664,7 +760,7 @@ class TelegramBot:
                 wallet_address, CONFIG["target_token_mint"]
             )
 
-            response = f"🔑 Your Wallet:\n\n"
+            response = "🔑 Your Wallet:\n\n"
             response += f"Address: <code>{wallet_address}</code>\n"
             response += f"SOL Balance: {sol_balance:.6f} SOL\n"
             response += f"Token Balance: {token_balance:.6f} tokens\n"

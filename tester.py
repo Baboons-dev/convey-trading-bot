@@ -4,6 +4,8 @@ from typing import Dict, List, Optional
 from telegram import Update
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
+from solders.token.state import TokenAccount
+from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -14,6 +16,7 @@ import aiohttp
 from hpke import Suite__DHKEM_P256_HKDF_SHA256__HKDF_SHA256__ChaCha20Poly1305
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
 KEY_OFFSET = 0
 UPDATE_AUTH_OFFSET = KEY_OFFSET + 1
 MINT_OFFSET = UPDATE_AUTH_OFFSET + 32
@@ -79,16 +82,13 @@ class BlockchainUtils:
             print(f"Error getting SOL balance: {e}")
             return 0.0
 
-    async def get_token_metadata(self, mint_address: str) -> Optional[Dict[str, str]]:
+    async def get_token_metadata(self,wallet_address:str ,mint_address: str) -> Optional[Dict[str, str]]:
         try:
             mint_pubkey = Pubkey.from_string(mint_address)
-
-            # 1. Get mint account info
             mint_account_info = await self.client.get_token_supply(mint_pubkey)
-            supply = int(mint_account_info.value.amount)
             decimals = int(mint_account_info.value.decimals)
-
-            # 2. Derive metadata PDA using Metaplex
+            supply = (int(mint_account_info.value.amount))/ (10 ** decimals)
+            balance = await self.get_token_balance(wallet_address,mint_address,decimals)
             metadata_seed = [
                 b"metadata",
                 bytes(METADATA_PROGRAM_ID),
@@ -98,13 +98,13 @@ class BlockchainUtils:
                 metadata_seed, METADATA_PROGRAM_ID
             )
 
-            # # 3. Fetch metadata account info
             metadata_account = await self.client.get_account_info(metadata_pda)
 
             if not metadata_account.value:
                 return {
                     "supply": supply,
                     "decimals": decimals,
+                    "balance": balance,
                     "name": "unknown",
                     "symbol": "unknown",
                 }
@@ -112,44 +112,47 @@ class BlockchainUtils:
             data_base64 = metadata_account.value.data
             metadata_bytes = data_base64
 
-            # # 4. Decode name and symbol from metadata (Metaplex format)
             name = (
-                metadata_bytes[NAME_OFFSET : NAME_OFFSET+NAME_LENGTH]
+                metadata_bytes[NAME_OFFSET : NAME_OFFSET + NAME_LENGTH]
                 .decode("utf-8")
-                .rstrip("\x00")
+                .replace("\x00", "")
+                .strip()
             )
-            name = name.rstrip("\x00").strip()
             symbol = (
-                metadata_bytes[SYMBOL_OFFSET:SYMBOL_OFFSET+SYMBOL_LENGTH]
+                metadata_bytes[SYMBOL_OFFSET : SYMBOL_OFFSET + SYMBOL_LENGTH]
                 .decode("utf-8")
-                .rstrip("\x00")
+                .replace("\x00", "")
+                .strip()
             )
 
             return {
                 "name": name,
                 "symbol": symbol,
                 "supply": str(supply),
+                "balance": str(balance),
             }
 
         except Exception as e:
             print(f"Error getting token metadata: {e}")
             return None
 
-    async def get_token_balance(self, wallet_address: str, mint_address: str) -> float:
+    async def get_token_balance(self, wallet_address: str, mint_address: str,decimals:int) -> float:
         """Get token balance for a specific mint"""
         try:
             pubkey = Pubkey.from_string(wallet_address)
             mint_pubkey = Pubkey.from_string(mint_address)
-
+            token_opts = TokenAccountOpts(
+                mint=mint_pubkey,
+                encoding="base64",
+            )
             # Get token accounts
             response = await self.client.get_token_accounts_by_owner(
-                pubkey, {"mint": mint_pubkey}
+                pubkey, token_opts
             )
-
-            if response.value:
-                token_account = response.value[0].account.data.parsed["info"]
-                amount = int(token_account["tokenAmount"]["amount"])
-                decimals = token_account["tokenAmount"]["decimals"]
+            raw_data = response.value[0].account.data if response.value else None
+            data = TokenAccount.from_bytes(raw_data) if raw_data else None
+            if data:
+                amount = data.amount
                 return amount / (10**decimals)
             return 0.0
         except Exception as e:
@@ -229,10 +232,16 @@ class BlockchainUtils:
 
 
 async def main():
-
     utils = BlockchainUtils()
-    data = await utils.get_token_metadata(CONFIG["target_token_mint"])
+    data = await utils.get_token_metadata("CcPJow48P7tHQjTjxr5GKmdqaRFDbVdd25tDzh9bdYjp",CONFIG["target_token_mint"])
+
+    print("Token Metadata:")
     print(data)
+    if data:
+        print(f"Name: {data['name']}")
+        print(f"Symbol: {data['symbol'].strip()}")
+        print(f"Supply: {data['supply']}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

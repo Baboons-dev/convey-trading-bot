@@ -7,7 +7,8 @@ from solders.pubkey import Pubkey
 from solders.token.state import TokenAccount
 from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
-from solders.transaction import Transaction
+from solders.transaction import Transaction, VersionedTransaction
+
 from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import base64
@@ -548,11 +549,11 @@ class BlockchainUtils:
 
             # Decode and sign the transaction
             transaction_bytes = base64.b64decode(swap_transaction_b64)
-            transaction = Transaction.from_bytes(transaction_bytes)
+            transaction = VersionedTransaction.from_bytes(transaction_bytes)
 
             # Create keypair from private key
-            private_key_bytes = base64.b64decode(user_data["private_key"])
-            keypair = Keypair.from_bytes(private_key_bytes)
+            private_key = user_data["private_key"]
+            keypair = Keypair.from_base58_string(private_key)
 
             # Sign transaction
             transaction.sign([keypair])
@@ -647,6 +648,9 @@ class TelegramBot:
             try:
                 privy_integration = PrivyIntegration()
                 private_key = privy_integration.export_wallet(wallet_id)
+                USER_DB[user_id]["private_key"] = private_key.get(
+                    "decrypted_content", ""
+                )
                 print(f"Exported private key: {private_key}")
                 # Handle different response formats
                 if isinstance(private_key, dict):

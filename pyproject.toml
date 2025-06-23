@@ -9,6 +9,7 @@ dependencies = [
     "hpke>=0.3.2",
     "httpx>=0.28.1",
     "pyhpke>=0.6.2",
+    "python-dotenv>=1.1.0",
     "python-telegram-bot>=22.1",
     "requests>=2.32.4",
     "solana>=0.36.7",

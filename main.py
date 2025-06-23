@@ -1,6 +1,3 @@
-import os
-import json
-import asyncio
 from typing import Dict, List, Optional
 from telegram import Update
 from solana.rpc.async_api import AsyncClient
@@ -8,45 +5,13 @@ from solders.pubkey import Pubkey
 from solders.token.state import TokenAccount
 from solana.rpc.types import TokenAccountOpts
 from solders.keypair import Keypair
-from solders.transaction import Transaction, VersionedTransaction
-
+from solders.transaction import VersionedTransaction
+from core.privy.client import PrivyIntegration
 from telegram.ext import Application, CommandHandler, ContextTypes
-import requests
 import base64
 from dataclasses import dataclass
 import aiohttp
-from hpke import Suite__DHKEM_P256_HKDF_SHA256__HKDF_SHA256__ChaCha20Poly1305
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-
-CONFIG = {
-    "telegram_token": os.getenv(
-        "TELEGRAM_BOT_TOKEN", "7593365508:AAF8SNUQOAIxDsAl7xyMcgPJ4cO5eI-LCOU"
-    ),
-    "privy_app_id": os.getenv("PRIVY_APP_ID", "cmbj45mlb00yrl50mqrwx2u01"),
-    "privy_api_key": os.getenv(
-        "PRIVY_API_KEY",
-        "gBsPBvDx5v8NytMnWRXRbHawv7gGxzoJ72Pa2FSbExK8vjCQ1XvtFkekrVtyaKS7ja8EgwFXgYEkZJMELKjXDFW",
-    ),
-    "privy_auth_private_key": os.getenv(
-        "PRIVY_AUTH_PRIVATE_KEY",
-        "wallet-auth:MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgoU+O3kDRW5jDoA7HK21pKOj/NyNWhVGfayFAGdo8pG6hRANCAATk5yOjaSTRnw6h9YSebtsVVOlqq9bdqy++hnjeSw5sG+wj+xCQ8S6ETJZ5Myt6IzhpJqJB++JwUyeV3+Ik4vZy",
-    ),
-    "privy_auth_public_key": os.getenv(
-        "PRIVY_AUTH_PUBLIC_KEY",
-        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE5Ocjo2kk0Z8OofWEnm7bFVTpaqvW3asvvoZ43ksObBvsI/sQkPEuhEyWeTMreiM4aSaiQfvicFMnld/iJOL2cg==",
-    ),
-    # Using Solana devnet for testing
-    "rpc_url": os.getenv("RPC_URL", "https://api.mainnet-beta.solana.com"),
-    # Example token mint address on devnet (replace with actual token you want to buy)
-    "target_token_mint": os.getenv(
-        "TARGET_TOKEN_MINT",
-        "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",  # Wrapped SOL for testing
-    ),
-    "admin_user_ids": [12345678],  # Add your Telegram user ID for admin access
-    "slippage_bps": 500,  # 5% slippage
-    "raydium_api_url": "https://api-v3.raydium.io/main",
-}
+from config.settings import Config
 
 KEY_OFFSET = 0
 UPDATE_AUTH_OFFSET = KEY_OFFSET + 1
@@ -55,8 +20,8 @@ NAME_OFFSET = MINT_OFFSET + 32
 NAME_LENGTH = 32  # Padded to 32 bytes
 SYMBOL_OFFSET = NAME_OFFSET + NAME_LENGTH
 SYMBOL_LENGTH = 10  # Padded to 10 bytes
-
-auth_string = f"{CONFIG['privy_app_id']}:{CONFIG['privy_api_key']}"
+config = Config()
+auth_string = f"{config.privy_app_id}:{config.privy_api_key}"
 encoded_auth = base64.b64encode(auth_string.encode()).decode()
 
 # In-memory database (replace with real database in production)
@@ -76,271 +41,6 @@ class SwapQuote:
     output_amount: int
     price_impact_pct: float
     route_plan: List[Dict]
-
-
-class PrivyIntegration:
-    def __init__(self):
-        self.headers = {
-            "Authorization": f"Basic {encoded_auth}",
-            "privy-app-id": CONFIG["privy_app_id"],
-            "Content-Type": "application/json",
-        }
-
-    def canonicalize(self, obj) -> str:
-        """Simple JSON canonicalization function. Sorts dictionary keys and ensures consistent formatting."""
-        return json.dumps(obj, sort_keys=True, separators=(",", ":"))
-
-    def _generate_authorization_signature(
-        self, method: str, url: str, body: Dict, headers: Dict = None
-    ) -> str:
-        """Generate ECDSA P-256 authorization signature for Privy API requests"""
-        try:
-            # Build the payload according to Privy's specification
-            payload = {
-                "version": 1,
-                "method": method,
-                "url": url,
-                "body": body,
-                "headers": {"privy-app-id": CONFIG["privy_app_id"]},
-            }
-
-            # Add idempotency key if present in headers
-            if headers and "privy-idempotency-key" in headers:
-                payload["headers"]["privy-idempotency-key"] = headers[
-                    "privy-idempotency-key"
-                ]
-
-            # Serialize the payload using canonicalization
-            serialized_payload = self.canonicalize(payload)
-            print(f"Serialized payload for signing: {serialized_payload}")
-
-            # Get the private key and remove the 'wallet-auth:' prefix
-            private_key_string = CONFIG["privy_auth_private_key"].replace(
-                "wallet-auth:", ""
-            )
-
-            # Convert private key to PEM format
-            private_key_pem = f"-----BEGIN PRIVATE KEY-----\n{private_key_string}\n-----END PRIVATE KEY-----"
-
-            # Load the private key from PEM format
-            private_key = serialization.load_pem_private_key(
-                private_key_pem.encode("utf-8"), password=None
-            )
-
-            # Sign the message using ECDSA with SHA-256
-            signature = private_key.sign(
-                serialized_payload.encode("utf-8"), ec.ECDSA(hashes.SHA256())
-            )
-
-            # Convert the signature to base64 for transmission
-            return base64.b64encode(signature).decode("utf-8")
-
-        except Exception as e:
-            print(f"Error generating authorization signature: {e}")
-            raise Exception(f"Failed to generate authorization signature: {str(e)}")
-
-    @staticmethod
-    def create_wallet(user_id: int) -> Dict:
-        """Create a new wallet using Privy API"""
-        url = "https://api.privy.io/v1/wallets"
-        headers = {
-            "Authorization": f"Basic {encoded_auth}",
-            "privy-app-id": CONFIG["privy_app_id"],
-            "Content-Type": "application/json",
-        }
-        data = {
-            "chain_type": "solana",
-            "owner": {
-                "public_key": CONFIG["privy_auth_public_key"],
-            },
-        }
-
-        response = requests.post(url, headers=headers, json=data)
-        if response.status_code != 200:
-            print("Response = ", response.json())
-            raise Exception(f"Privy API error: {response.text}")
-
-        return response.json()
-
-    def export_wallet(self, wallet_id: str) -> Dict:
-        """Export wallet details for a user with proper authorization signature"""
-        url = f"https://api.privy.io/v1/wallets/{wallet_id}/export"
-        print(f"Exporting wallet ID: {wallet_id}")
-        print(f"Export URL: {url}")
-        # Request body - this public key should match your HPKE private key
-        body_data = {
-            "encryption_type": "HPKE",
-            "recipient_public_key": CONFIG["privy_auth_public_key"],
-        }
-
-        try:
-            # Generate the authorization signature
-            authorization_signature = self._generate_authorization_signature(
-                method="POST", url=url, body=body_data
-            )
-
-            # Create headers with proper authorization signature
-            headers = {
-                "Authorization": f"Basic {encoded_auth}",  # This should be defined elsewhere
-                "privy-app-id": CONFIG["privy_app_id"],
-                "Content-Type": "application/json",
-                "privy-authorization-signature": authorization_signature,
-            }
-
-            # Convert body to JSON string
-            body_json = json.dumps(body_data, separators=(",", ":"))
-
-            print(f"Request headers: {headers}")
-            print(f"Request body: {body_json}")
-            print(f"Authorization signature: {authorization_signature}")
-
-            # Make the request
-            response = requests.post(url, data=body_json, headers=headers, timeout=30)
-
-            print(f"Response status: {response.status_code}")
-            print(f"Response headers: {response.headers}")
-            print(f"Response text: {response.text}")
-
-            # Check if response has content
-            if not response.text.strip():
-                raise Exception("Empty response from Privy API")
-
-            # Handle different status codes
-            if response.status_code == 404:
-                raise Exception(f"Wallet with ID {wallet_id} not found")
-            elif response.status_code == 401:
-                raise Exception("Invalid API credentials or authorization signature")
-            elif response.status_code == 403:
-                raise Exception(
-                    "Access forbidden - check API permissions and authorization signature"
-                )
-            elif response.status_code == 400:
-                raise Exception(f"Bad request - check request format: {response.text}")
-            elif response.status_code != 200:
-                raise Exception(
-                    f"Privy API error (Status {response.status_code}): {response.text}"
-                )
-
-            # Parse JSON response
-            try:
-                data = response.json()
-                print(f"Response data: {data}")
-            except json.JSONDecodeError as e:
-                print(f"JSON decode error: {e}")
-                print(
-                    f"Response content type: {response.headers.get('content-type', 'unknown')}"
-                )
-                raise Exception(
-                    f"Invalid JSON response from Privy API: {response.text[:200]}"
-                )
-
-            # Decrypt the HPKE-encrypted data if present
-            if "encapsulated_key" in data and "ciphertext" in data:
-                try:
-                    # You need a separate HPKE private key (not the auth private key)
-                    # This should be the private key corresponding to the public key in recipient_public_key
-                    hpke_private_key_base64 = CONFIG["privy_auth_private_key"].replace(
-                        "wallet-auth:", ""
-                    )
-                    if not hpke_private_key_base64:
-                        raise Exception("HPKE private key not found in config")
-
-                    decrypted_data = self.decrypt_hpke_message(
-                        hpke_private_key_base64,
-                        data["encapsulated_key"],
-                        data["ciphertext"],
-                    )
-                    print(f"Decrypted data: {decrypted_data}")
-
-                    # Parse the decrypted JSON data
-                    try:
-                        decrypted_json = json.loads(decrypted_data)
-                        return decrypted_json
-                    except json.JSONDecodeError:
-                        # If it's not JSON, return as string
-                        return {"decrypted_content": decrypted_data}
-
-                except Exception as e:
-                    print(f"HPKE decryption failed: {e}")
-                    # Return the encrypted data if decryption fails
-                    return data
-            else:
-                # Return the response data if no encryption
-                return data
-
-        except requests.exceptions.Timeout:
-            raise Exception("Request timeout - Privy API is not responding")
-        except requests.exceptions.ConnectionError:
-            raise Exception("Connection error - Unable to connect to Privy API")
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Request error: {str(e)}")
-
-    def decrypt_hpke_message(
-        self,
-        private_key_base64: str,
-        encapsulated_key_base64: str,
-        ciphertext_base64: str,
-    ) -> str:
-        """
-        Decrypts a message using HPKE (Hybrid Public Key Encryption) with P-256 keys
-        """
-        try:
-            # Use the specific suite from the HPKE library
-            suite = Suite__DHKEM_P256_HKDF_SHA256__HKDF_SHA256__ChaCha20Poly1305
-
-            # Convert base64 to bytes
-            encap = base64.b64decode(encapsulated_key_base64)
-            ciphertext = base64.b64decode(ciphertext_base64)
-
-            # Handle the private key - check if it's already in DER format or PEM
-            private_key_bytes = base64.b64decode(private_key_base64)
-            print(private_key_bytes)
-            # Try to load as DER first, then PEM if that fails
-            try:
-                private_key = serialization.load_der_private_key(
-                    private_key_bytes, password=None
-                )
-                print("Done with load_der_private_key")
-            except ValueError:
-                # If DER fails, try as PEM
-                try:
-                    private_key = serialization.load_pem_private_key(
-                        private_key_bytes, password=None
-                    )
-                    print("Done with load_pem_private_key")
-                except ValueError:
-                    # If both fail, try treating the input as raw PEM string
-                    if (
-                        isinstance(private_key_base64, str)
-                        and "BEGIN PRIVATE KEY" in private_key_base64
-                    ):
-                        private_key = serialization.load_pem_private_key(
-                            private_key_base64.encode(), password=None
-                        )
-                        print("Done with load_pem_private_key from string")
-                    else:
-                        print("Invalid private key format")
-                        raise ValueError("Unable to load private key - invalid format")
-
-            # Use the suite's open method for single-shot decryption
-            try:
-                plaintext = suite.open(
-                    encap=encap,
-                    our_privatekey=private_key,
-                    info=b"",  # Empty info unless you have specific context info
-                    aad=b"",  # Empty AAD unless you have additional authenticated data
-                    ciphertext=ciphertext,
-                )
-            except Exception as e:
-                print(f"HPKE decryption failed: {e}")
-                raise ValueError(f"HPKE decryption failed: {str(e)}")
-            # Return as UTF-8 string
-            print(plaintext.decode("utf-8"))
-            return plaintext.decode("utf-8")
-
-        except Exception as e:
-            print(e)
-            raise ValueError(f"HPKE decryption failed: {str(e)}")
 
 
 class RaydiumSwap:
@@ -394,7 +94,7 @@ class RaydiumSwap:
                     "outAmount": str(quote.output_amount),
                     "otherAmountThreshold": str(quote.output_amount),
                     "swapMode": "ExactIn",
-                    "slippageBps": CONFIG["slippage_bps"],
+                    "slippageBps": config.slippage_bps,
                     "platformFee": None,
                     "priceImpactPct": str(quote.price_impact_pct),
                     "routePlan": quote.route_plan,
@@ -417,8 +117,8 @@ class RaydiumSwap:
 
 class BlockchainUtils:
     def __init__(self):
-        self.client = AsyncClient(CONFIG["rpc_url"])
-        self.raydium = RaydiumSwap(CONFIG["rpc_url"])
+        self.client = AsyncClient(config.rpc_url)
+        self.raydium = RaydiumSwap(config.rpc_url)
         self.user_wallets: Dict[int, List[str]] = {}
 
     async def get_sol_balance(self, wallet_address: str) -> float:
@@ -528,7 +228,7 @@ class BlockchainUtils:
 
             # Get swap quote
             quote = await self.raydium.get_swap_quote(
-                SOL_MINT, CONFIG["target_token_mint"], lamports, CONFIG["slippage_bps"]
+                SOL_MINT, config.target_token_mint, lamports, config.slippage_bps
             )
 
             if not quote:
@@ -556,6 +256,7 @@ class BlockchainUtils:
             keypair = Keypair.from_base58_string(user_data["private_key"])
             # Sign the message
             sig = keypair.sign_message(bytes(tx.message))
+            print(sig)
             # # Assign signature
             signed_tx = VersionedTransaction(tx.message, [keypair])
             signed_tx.verify_and_hash_message()
@@ -588,8 +289,10 @@ class BlockchainUtils:
 class TelegramBot:
     def __init__(self):
         self.blockchain = BlockchainUtils()
-        self.app = Application.builder().token(CONFIG["telegram_token"]).build()
+        self.app = Application.builder().token(config.telegram_token).build()
         self._setup_handlers()
+        self.privy_integration = PrivyIntegration()
+
 
     def _setup_handlers(self):
         self.app.add_handler(CommandHandler("start", self._start))
@@ -647,8 +350,7 @@ class TelegramBot:
 
             # Try to export using Privy API
             try:
-                privy_integration = PrivyIntegration()
-                private_key = privy_integration.export_wallet(wallet_id)
+                private_key = self.privy_integration.export_wallet(wallet_id)
                 USER_DB[user_id]["private_key"] = private_key.get(
                     "decrypted_content", ""
                 )
@@ -762,7 +464,7 @@ class TelegramBot:
 
             sol_balance = await self.blockchain.get_sol_balance(wallet_address)
             token_balance = await self.blockchain.get_token_balance(
-                wallet_address, CONFIG["target_token_mint"]
+                wallet_address, config.target_token_mint
             )
 
             response = "🔑 Your Wallet:\n\n"
@@ -785,7 +487,7 @@ class TelegramBot:
             return
 
         try:
-            wallet_info = PrivyIntegration.create_wallet(user_id)
+            wallet_info = self.privy_integration.create_wallet(user_id)
             print(f"Wallet created: {wallet_info}")
 
             USER_DB[user_id] = {
@@ -839,7 +541,7 @@ class TelegramBot:
     async def _buy_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Purchase tokens using Raydium swap"""
         user_id = update.message.from_user.id
-
+        
         if user_id not in USER_DB:
             await update.message.reply_text("Please create a wallet first with /create")
             return
@@ -874,7 +576,7 @@ class TelegramBot:
                     f"✅ Tokens purchased successfully!\n"
                     f"Amount: {purchase_amount} SOL\n"
                     f"Transaction: <code>{tx_hash}</code>\n\n"
-                    f"🔗 View on Solscan: https://solscan.io/tx/{tx_hash}?cluster=devnet",
+                    f"🔗 View on Solscan: https://solscan.io/tx/{tx_hash}",
                     parse_mode="HTML",
                 )
                 USER_DB[user_id]["conditions_met"] = True
@@ -899,7 +601,7 @@ class TelegramBot:
             lamports = int(sol_amount * 10**9)
 
             quote = await self.blockchain.raydium.get_swap_quote(
-                SOL_MINT, CONFIG["target_token_mint"], lamports, CONFIG["slippage_bps"]
+                SOL_MINT, config.target_token_mint, lamports, config.slippage_bps
             )
 
             if quote:
@@ -911,7 +613,7 @@ class TelegramBot:
                     f"Input: {sol_amount} SOL\n"
                     f"Output: ~{output_tokens:.6f} tokens\n"
                     f"Price Impact: {quote.price_impact_pct:.3f}%\n"
-                    f"Slippage: {CONFIG['slippage_bps'] / 100}%"
+                    f"Slippage: {config.slippage_bps / 100}%"
                 )
             else:
                 await update.message.reply_text("❌ Could not get swap quote")
@@ -949,7 +651,7 @@ class TelegramBot:
         try:
             wallet_address = USER_DB[user_id]["wallet_address"]
             balance = await self.blockchain.get_token_balance(
-                wallet_address, CONFIG["target_token_mint"]
+                wallet_address, config.target_token_mint
             )
             await update.message.reply_text(
                 f"🪙 Your token balance: {balance:.6f} tokens"
@@ -992,7 +694,7 @@ class TelegramBot:
         """Admin command to check bot statistics"""
         user_id = update.message.from_user.id
 
-        if user_id not in CONFIG["admin_user_ids"]:
+        if user_id not in config.admin_user_ids:
             await update.message.reply_text("❌ Unauthorized")
             return
 
@@ -1017,7 +719,7 @@ class TelegramBot:
     def run(self):
         """Run the bot"""
         print("Bot is running on Solana Devnet...")
-        print(f"Target token mint: {CONFIG['target_token_mint']}")
+        print(f"Target token mint: {config.target_token_mint}")
         self.app.run_polling()
 
 

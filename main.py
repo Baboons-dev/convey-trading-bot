@@ -213,8 +213,9 @@ class BlockchainUtils:
             print(f"Error getting token balance: {e}")
             return 0.0
 
-    async def execute_swap(self, user_id: int, sol_amount: float) -> Optional[str]:
+    async def execute_swap(self, user_id: int, sol_amount: float,token_address:str=None) -> Optional[str]:
         """Execute token swap using Raydium/Jupiter"""
+        target_token = token_address if token_address else config.target_token_mint
         try:
             if user_id not in USER_DB:
                 raise Exception("User wallet not found")
@@ -228,7 +229,7 @@ class BlockchainUtils:
 
             # Get swap quote
             quote = await self.raydium.get_swap_quote(
-                SOL_MINT, config.target_token_mint, lamports, config.slippage_bps
+                SOL_MINT, target_token, lamports, config.slippage_bps
             )
 
             if not quote:
@@ -539,7 +540,7 @@ class TelegramBot:
             )
 
     async def _buy_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Purchase tokens using Raydium swap"""
+        """Purchase tokens using Raydium swap by specifying token address"""
         user_id = update.message.from_user.id
         
         if user_id not in USER_DB:
@@ -547,15 +548,31 @@ class TelegramBot:
             return
 
         try:
+            # Check if token address was provided
+            if not context.args or len(context.args) == 0:
+                await update.message.reply_text(
+                    "Please specify the token address you want to purchase.\n"
+                    "Example: /buy_tokens D3g9eWGqA1q7VQ3Q5Q6Q7Q8Q9Q0Q1Q2Q3Q4Q5Q6Q7Q8"
+                )
+                return
+
+            token_address = context.args[0].strip()
+            
+            # Validate token address format (basic check)
+            if len(token_address) != 44 or not token_address.isalnum():
+                await update.message.reply_text(
+                    "❌ Invalid token address format. "
+                    "Please provide a valid Solana token address (44 characters)."
+                )
+                return
+
             user_data = USER_DB[user_id]
             purchase_amount = user_data["purchase_amount"]
             wallet_address = user_data["wallet_address"]
 
             # Check SOL balance
             sol_balance = await self.blockchain.get_sol_balance(wallet_address)
-            if (
-                sol_balance < purchase_amount + 0.01
-            ):  # Reserve 0.01 SOL for transaction fees
+            if sol_balance < purchase_amount + 0.01:  # Reserve 0.01 SOL for transaction fees
                 await update.message.reply_text(
                     f"❌ Insufficient SOL balance!\n"
                     f"Required: {purchase_amount + 0.01:.3f} SOL (including fees)\n"
@@ -565,15 +582,20 @@ class TelegramBot:
                 return
 
             await update.message.reply_text(
-                "🔄 Processing swap... This may take a moment."
+                f"🔄 Processing swap for token {token_address}... This may take a moment."
             )
 
-            # Execute swap
-            tx_hash = await self.blockchain.execute_swap(user_id, purchase_amount)
+            # Execute swap with token address
+            tx_hash = await self.blockchain.execute_swap(
+                user_id, 
+                purchase_amount, 
+                token_address=token_address
+            )
 
             if tx_hash:
                 await update.message.reply_text(
                     f"✅ Tokens purchased successfully!\n"
+                    f"Token: {token_address}\n"
                     f"Amount: {purchase_amount} SOL\n"
                     f"Transaction: <code>{tx_hash}</code>\n\n"
                     f"🔗 View on Solscan: https://solscan.io/tx/{tx_hash}",
@@ -587,7 +609,6 @@ class TelegramBot:
 
         except Exception as e:
             await update.message.reply_text(f"❌ Error purchasing tokens: {str(e)}")
-
     async def _get_quote(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Get swap quote"""
         if not context.args:

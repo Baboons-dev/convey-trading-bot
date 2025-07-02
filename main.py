@@ -182,6 +182,7 @@ class BlockchainUtils:
             return {
                 "name": name,
                 "symbol": symbol,
+                "decimals": decimals,
                 "supply": str(supply),
                 "balance": str(balance),
             }

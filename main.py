@@ -605,7 +605,6 @@ class TelegramBot:
                     )
                     return
 
-
             await update.message.reply_text(
                 f"🔄 Getting swap quote and preparing transaction...\n"
                 f"From: {input_token}\nTo: {output_token}\nAmount: {amount}"
@@ -798,7 +797,6 @@ async def main():
     result = await utils.get_token_metadata("4wiyTBAiRjwBoa5vTSNDojguNAXLdyTHV4kJs1F4qP1M","So11111111111111111111111111111111111111112")
     print(result['decimals'])
 
-import asyncio
 if __name__ == "__main__":
-    
-    asyncio.run(main())
+    bot = TelegramBot()
+    bot.run()

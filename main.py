@@ -560,6 +560,9 @@ class TelegramBot:
 
         input_token = context.args[0]
         output_token = context.args[1]
+        if input_token.upper() == "SOL":
+            input_token = SOL_MINT
+
         try:
             amount = float(context.args[2])
             if amount <= 0:
@@ -570,29 +573,38 @@ class TelegramBot:
 
         try:
             wallet_address = USER_DB[user_id]["wallet_address"]
-
-            # Get token metadata to determine decimals
-            token_meta = await self.blockchain.get_token_metadata(
-                wallet_address, input_token
-            )
-            if not token_meta:
-                await update.message.reply_text(
-                    "❌ Could not fetch input token metadata."
+            if input_token == SOL_MINT:
+                decimals = 9  # SOL has 9 decimals
+            else:
+                # Get token metadata to determine decimals
+                token_meta = await self.blockchain.get_token_metadata(
+                    wallet_address, input_token
                 )
-                return
+                if not token_meta:
+                    await update.message.reply_text(
+                        "❌ Could not fetch input token metadata."
+                    )
+                    return
 
-            decimals = int(token_meta["decimals"])
+                decimals = int(token_meta["decimals"])
             lamports = int(amount * 10**decimals)
 
-            # Check token balance
-            balance = await self.blockchain.get_token_balance(
-                wallet_address, input_token, decimals
-            )
-            if balance < amount:
-                await update.message.reply_text(
-                    f"❌ Insufficient balance of input token ({balance:.4f} < {amount})"
-                )
-                return
+            if input_token == SOL_MINT:
+                balance = await self.blockchain.get_sol_balance(wallet_address)
+                # Reserve 0.01 SOL for fees
+                if balance < amount + 0.01:
+                    await update.message.reply_text(
+                        f"❌ Not enough SOL. You need at least {amount + 0.01:.3f} SOL including transaction fee."
+                    )
+                    return
+            else:
+                balance = await self.blockchain.get_token_balance(wallet_address, input_token, decimals)
+                if balance < amount:
+                    await update.message.reply_text(
+                        f"❌ Insufficient balance of input token ({balance:.4f} < {amount})"
+                    )
+                    return
+
 
             await update.message.reply_text(
                 f"🔄 Getting swap quote and preparing transaction...\n"
@@ -776,17 +788,17 @@ class TelegramBot:
 
 
 async def main():
-    # USER_DB[0] = {
-    #     "wallet_id": "cuv82spsv6lnbchakez8f3fg",
-    #     "wallet_address": "CcCKEJzTagj5W6wJkAB33HY7AbShN3G4h3xsUAoVWmVc",
-    #     "private_key": "4rHYEWpovVao3UMpADyf1mFqr3rh6ZkjqPTFQCLbKeWTR1aFmytNCjJRhMgjmW8iHAf7m6wzYcTmjvTLRBDvjSEW",
-    #     "purchase_amount": 0.01,  # Default amount in SOL
-    # }
+    USER_DB[0] = {
+        "wallet_id": "inh25mdbtjr44gvuluxs67vb",
+        "wallet_address": "4wiyTBAiRjwBoa5vTSNDojguNAXLdyTHV4kJs1F4qP1M",
+        "private_key": "c3YMGVQ2s3DYB9w2SQeeEB9qh41vCRYdfALBuAErtNZiqmHZu1JNsctEXTpdrK41uvaVjQXZKa6rcWYRfBxQGD1",
+        "purchase_amount": 0.01,  # Default amount in SOL
+    }
     utils = BlockchainUtils()
-    result = await utils.execute_swap(0, 0.01)
-    print(result)
+    result = await utils.get_token_metadata("4wiyTBAiRjwBoa5vTSNDojguNAXLdyTHV4kJs1F4qP1M","So11111111111111111111111111111111111111112")
+    print(result['decimals'])
 
-
+import asyncio
 if __name__ == "__main__":
-    bot = TelegramBot()
-    bot.run()
+    
+    asyncio.run(main())

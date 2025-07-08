@@ -260,7 +260,6 @@ class BlockchainUtils:
             keypair = Keypair.from_base58_string(user_data["private_key"])
             # Sign the message
             sig = keypair.sign_message(bytes(tx.message))
-            print(sig)
             # # Assign signature
             signed_tx = VersionedTransaction(tx.message, [keypair])
             signed_tx.verify_and_hash_message()
@@ -303,11 +302,9 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("set_amount", self._set_purchase_amount))
         self.app.add_handler(CommandHandler("buy_tokens", self._buy_tokens))
         self.app.add_handler(CommandHandler("balance", self._check_balance))
-        self.app.add_handler(CommandHandler("token_balance", self._check_token_balance))
         self.app.add_handler(CommandHandler("airdrop", self._request_airdrop))
         self.app.add_handler(CommandHandler("quote", self._quote_tokens))
         self.app.add_handler(CommandHandler("admin_stats", self._admin_stats))
-        self.app.add_handler(CommandHandler("mywallets", self.handle_wallets_command))
         self.app.add_handler(CommandHandler("export", self._export_wallet))
         self.app.add_handler(CommandHandler("token_metadata", self._get_token_metadata))
 
@@ -320,12 +317,10 @@ class TelegramBot:
             "/set_amount <amount> - Set token purchase amount in SOL\n"
             "/buy_tokens - Purchase tokens with SOL using Raydium\n"
             "/balance - Check your SOL balance\n"
-            "/token_balance - Check your token balance\n"
             "/airdrop - Request SOL airdrop (devnet only)\n"
-            "/quote  - Get swap quote for amount\n"
-            "/mywallets - View your wallets\n\n"
+            "/quote <amount> - Get swap quote for amount in SOL\n"
             "/export - Export your wallet details\n"
-            "/token_metadata <mint_address> - Get token metadata for a specific mint\n\n"
+            "/token_metadata <mint_address> - Get information for a specific token\n\n"
             "⚠️ This bot uses Solana DEVNET for testing!"
         )
 
@@ -700,29 +695,6 @@ class TelegramBot:
             await update.message.reply_text(f"💰 Your SOL balance: {balance:.6f} SOL")
         except Exception as e:
             await update.message.reply_text(f"❌ Error checking balance: {str(e)}")
-
-    async def _check_token_balance(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ):
-        """Check user's token balance"""
-        user_id = update.message.from_user.id
-
-        if user_id not in USER_DB:
-            await update.message.reply_text("Please create a wallet first with /create")
-            return
-
-        try:
-            wallet_address = USER_DB[user_id]["wallet_address"]
-            balance = await self.blockchain.get_token_balance(
-                wallet_address, config.target_token_mint
-            )
-            await update.message.reply_text(
-                f"🪙 Your token balance: {balance:.6f} tokens"
-            )
-        except Exception as e:
-            await update.message.reply_text(
-                f"❌ Error checking token balance: {str(e)}"
-            )
 
     async def _request_airdrop(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

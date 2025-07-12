@@ -11,6 +11,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 import base64
 from dataclasses import dataclass
 import aiohttp
+import asyncio
 from config.settings import Config
 
 KEY_OFFSET = 0
@@ -275,6 +276,20 @@ class BlockchainUtils:
     async def get_user_wallet_addresses(self, user_id: int) -> List[str]:
         return self.user_wallets.get(user_id, [])
 
+    async def fetch_trending_tokens(self, limit: int = 10) -> List[Dict]:
+        url = f"https://lite-api.jup.ag/tokens/v2/toptrending/24h?limit={limit}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url, headers={"Accept": "application/json"}
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        return data
+        except Exception as e:
+            print(f"Error fetching trending tokens: {e}")
+        return []
+
     async def airdrop_sol(
         self, wallet_address: str, amount: float = 2.0
     ) -> Optional[str]:
@@ -310,6 +325,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("mywallets", self.handle_wallets_command))
         self.app.add_handler(CommandHandler("export", self._export_wallet))
         self.app.add_handler(CommandHandler("token_metadata", self._get_token_metadata))
+        self.app.add_handler(CommandHandler("top_tokens", self._top_tokens))
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message"""
@@ -325,9 +341,42 @@ class TelegramBot:
             "/quote  - Get swap quote for amount\n"
             "/mywallets - View your wallets\n\n"
             "/export - Export your wallet details\n"
+            "/top_tokens - shows top 10 trending tokens\n"
             "/token_metadata <mint_address> - Get token metadata for a specific mint\n\n"
             "⚠️ This bot uses Solana DEVNET for testing!"
         )
+
+    async def _top_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show top 10 trending tokens using Jupiter's 24h API"""
+        await update.message.reply_text(
+            "📊 Fetching top trending tokens from Jupiter..."
+        )
+
+        try:
+            tokens = await self.blockchain.fetch_trending_tokens(limit=10)
+
+            if not tokens:
+                await update.message.reply_text("❌ Could not fetch trending tokens.")
+                return
+
+            message = "<b>🔥 Top 10 Trending Tokens (24h):</b>\n\n"
+            for token in tokens:
+                name = token.get("name", "Unknown")
+                symbol = token.get("symbol", "???")
+                address = token.get("address", "")
+                price = float(token.get("price", 0))
+                change = float(token.get("priceChangePct24h", 0)) * 100
+
+                message += (
+                    f"• <b>{name}</b> ({symbol})\n"
+                    f"Price: ${price:.4f} ({change:+.2f}%)\n"
+                    f"<code>{address}</code>\n\n"
+                )
+
+            await update.message.reply_text(message, parse_mode="HTML")
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error fetching top tokens: {str(e)}")
 
     async def _export_wallet(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Export wallet details for the user"""
@@ -598,7 +647,9 @@ class TelegramBot:
                     )
                     return
             else:
-                balance = await self.blockchain.get_token_balance(wallet_address, input_token, decimals)
+                balance = await self.blockchain.get_token_balance(
+                    wallet_address, input_token, decimals
+                )
                 if balance < amount:
                     await update.message.reply_text(
                         f"❌ Insufficient balance of input token ({balance:.4f} < {amount})"
@@ -794,8 +845,12 @@ async def main():
         "purchase_amount": 0.01,  # Default amount in SOL
     }
     utils = BlockchainUtils()
-    result = await utils.get_token_metadata("4wiyTBAiRjwBoa5vTSNDojguNAXLdyTHV4kJs1F4qP1M","So11111111111111111111111111111111111111112")
-    print(result['decimals'])
+    result = await utils.fetch_trending_tokens(
+        "4wiyTBAiRjwBoa5vTSNDojguNAXLdyTHV4kJs1F4qP1M",
+        "So11111111111111111111111111111111111111112",
+    )
+    print(result["decimals"])
+
 
 if __name__ == "__main__":
     bot = TelegramBot()

@@ -358,13 +358,12 @@ class TelegramBot:
             for token in tokens:
                 name = token.get("name", "Unknown")
                 symbol = token.get("symbol", "???")
-                address = token.get("address", "")
-                price = float(token.get("price", 0))
-                change = float(token.get("priceChangePct24h", 0)) * 100
+                address = token.get("dev", "")
+                price = float(token.get("usdPrice", 0))
 
                 message += (
                     f"• <b>{name}</b> ({symbol})\n"
-                    f"Price: ${price:.4f} ({change:+.2f}%)\n"
+                    f"Price: ${price:.4f}\n"
                     f"<code>{address}</code>\n\n"
                 )
 

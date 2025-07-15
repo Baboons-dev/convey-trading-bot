@@ -655,7 +655,7 @@ class TelegramBot:
             return
 
         if len(context.args) < 3:
-            await update.message.reply_text(
+            await (update.message or update.callback_query).reply_text(
                 "Usage:\n"
                 "/buy_tokens <input_token_mint> <output_token_mint>\n\n"
                 "Example:\n"
@@ -673,7 +673,7 @@ class TelegramBot:
             if amount <= 0:
                 raise ValueError("Invalid amount")
         except ValueError:
-            await update.message.reply_text("❌ Invalid amount specified.")
+            await (update.message or update.callback_query).reply_text("❌ Invalid amount specified.")
             return
 
         try:
@@ -686,7 +686,7 @@ class TelegramBot:
                     wallet_address, input_token
                 )
                 if not token_meta:
-                    await update.message.reply_text(
+                    await (update.message or update.callback_query).reply_text(
                         "❌ Could not fetch input token metadata."
                     )
                     return
@@ -698,7 +698,7 @@ class TelegramBot:
                 balance = await self.blockchain.get_sol_balance(wallet_address)
                 # Reserve 0.01 SOL for fees
                 if balance < amount + 0.01:
-                    await update.message.reply_text(
+                    await (update.message or update.callback_query).reply_text(
                         f"❌ Not enough SOL. You need at least {amount + 0.01:.3f} SOL including transaction fee."
                     )
                     return
@@ -707,12 +707,12 @@ class TelegramBot:
                     wallet_address, input_token, decimals
                 )
                 if balance < amount:
-                    await update.message.reply_text(
+                    await (update.message or update.callback_query).reply_text(
                         f"❌ Insufficient balance of input token ({balance:.4f} < {amount})"
                     )
                     return
 
-            await update.message.reply_text(
+            await (update.message or update.callback_query).reply_text(
                 f"🔄 Getting swap quote and preparing transaction...\n"
                 f"From: {input_token}\nTo: {output_token}\nAmount: {amount}"
             )
@@ -722,7 +722,7 @@ class TelegramBot:
                 input_token, output_token, lamports, config.slippage_bps
             )
             if not quote:
-                await update.message.reply_text("❌ Could not get swap quote.")
+                await (update.message or update.callback_query).reply_text("❌ Could not get swap quote.")
                 return
 
             # Create and sign transaction
@@ -730,7 +730,7 @@ class TelegramBot:
                 quote, wallet_address
             )
             if not swap_tx:
-                await update.message.reply_text("❌ Could not create swap transaction.")
+                await (update.message or update.callback_query).reply_text("❌ Could not create swap transaction.")
                 return
 
             tx_bytes = base64.b64decode(swap_tx)
@@ -739,7 +739,7 @@ class TelegramBot:
             signed_tx = VersionedTransaction(tx.message, [keypair])
             result = await self.blockchain.client.send_raw_transaction(bytes(signed_tx))
 
-            await update.message.reply_text(
+            await (update.message or update.callback_query).reply_text(
                 f"✅ Swap successful!\n"
                 f"Input: {amount} tokens\n"
                 f"Tx: <code>{result.value}</code>\n"
@@ -747,7 +747,7 @@ class TelegramBot:
                 parse_mode="HTML",
             )
         except Exception as e:
-            await update.message.reply_text(f"❌ Error swapping tokens: {str(e)}")
+            await (update.message or update.callback_query).reply_text(f"❌ Error swapping tokens: {str(e)}")
 
     async def _quote_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Quote any two tokens"""

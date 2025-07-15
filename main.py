@@ -1,5 +1,5 @@
 from typing import Dict, List, Optional
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from solana.rpc.async_api import AsyncClient
 from solders.pubkey import Pubkey
 from solders.token.state import TokenAccount
@@ -10,6 +10,7 @@ from core.privy.client import PrivyIntegration
 from telegram.ext import Application, CommandHandler, ContextTypes
 import base64
 from dataclasses import dataclass
+from telegram.ext import CallbackQueryHandler
 import aiohttp
 import asyncio
 from config.settings import Config
@@ -323,6 +324,7 @@ class TelegramBot:
         self.app.add_handler(CommandHandler("export", self._export_wallet))
         self.app.add_handler(CommandHandler("token_metadata", self._get_token_metadata))
         self.app.add_handler(CommandHandler("top_tokens", self._top_tokens))
+        self.app.add_handler(CallbackQueryHandler(self._handle_buy_callback))
 
     async def _start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Send welcome message"""
@@ -341,8 +343,48 @@ class TelegramBot:
             "⚠️ This bot uses Solana DEVNET for testing!"
         )
 
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    async def _handle_buy_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
+        """Handles inline Buy button clicks for trending tokens"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+        if user_id not in USER_DB:
+            await query.edit_message_text(
+                "❌ You must first create a wallet using /create."
+            )
+            return
+
+        try:
+            data = query.data  # buy:<token_address>
+            if not data.startswith("buy:"):
+                await query.edit_message_text("❌ Invalid buy command.")
+                return
+
+            output_token_mint = data.split("buy:")[1]
+            input_token_mint = "SOL"
+            purchase_amount = USER_DB[user_id].get("purchase_amount", 0.1)
+
+            # Simulate invoking _buy_tokens via command
+            context.args = [input_token_mint, output_token_mint, str(purchase_amount)]
+            # You can log or notify that transaction is starting
+            await query.edit_message_text(
+                f"⏳ Executing purchase of {purchase_amount} SOL worth of token:\n<code>{output_token_mint}</code>",
+                parse_mode="HTML",
+            )
+
+            # Now call the actual buy function
+            await self._buy_tokens(update, context)
+
+        except Exception as e:
+            await query.edit_message_text(f"❌ Error processing buy request: {str(e)}")
+
     async def _top_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Show top 10 trending tokens using Jupiter's 24h API"""
+        """Show top 10 trending tokens using Jupiter's 24h API with inline purchase buttons"""
         await update.message.reply_text(
             "📊 Fetching top trending tokens from Jupiter..."
         )
@@ -355,10 +397,12 @@ class TelegramBot:
                 return
 
             message = "<b>🔥 Top 10 Trending Tokens (24h):</b>\n\n"
+            keyboard = []
+
             for token in tokens:
                 name = token.get("name", "Unknown")
                 symbol = token.get("symbol", "???")
-                address = token.get("dev", "")
+                address = token.get("address") or token.get("dev", "")
                 price = float(token.get("usdPrice", 0))
 
                 message += (
@@ -367,7 +411,19 @@ class TelegramBot:
                     f"<code>{address}</code>\n\n"
                 )
 
-            await update.message.reply_text(message, parse_mode="HTML")
+                # Add a button for this token
+                keyboard.append(
+                    [
+                        InlineKeyboardButton(
+                            text=f"Buy {symbol}",
+                            callback_data=f"buy:{address}",  # You will handle this in callback
+                        )
+                    ]
+                )
+
+            await update.message.reply_text(
+                message, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
         except Exception as e:
             await update.message.reply_text(f"❌ Error fetching top tokens: {str(e)}")

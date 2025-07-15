@@ -642,10 +642,16 @@ class TelegramBot:
 
     async def _buy_tokens(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Purchase tokens using Raydium swap by specifying input and output token addresses"""
-        user_id = update.message.from_user.id
+        user_id = (
+            update.message.from_user.id
+            if update.message
+            else update.callback_query.from_user.id
+        )
 
         if user_id not in USER_DB:
-            await update.message.reply_text("Please create a wallet first with /create")
+            await (update.message or update.callback_query).reply_text(
+                "Please create a wallet first with /create"
+            )
             return
 
         if len(context.args) < 3:
